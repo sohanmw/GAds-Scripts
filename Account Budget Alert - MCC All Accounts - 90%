@@ -1,0 +1,188 @@
+ 
+var SPEND_THRESHOLD = 0.9;  // 0.9 means send email for >90% utilization
+var EMAIL_TO = 'EMAIL_ADDRESS';
+var EMAIL_SUBJECT = 'Account Budget Alert - ACCOUNT - Ad Spend Over 90%';
+
+var COLUMN_NAMES = [
+  'CID', 'Account Name', 'Budget Name', 'Amount Spent', 'Budget Amount',
+  'Currency', '% Spent', 'Start Date', 'End Date'
+];
+
+function main() {
+  var accounts = MccApp.accounts().get();
+  Logger.log('Got %s accounts', '' + accounts.totalNumEntities());
+
+  var alertRows = [];
+  while (accounts.hasNext()) {
+    var account = accounts.next();
+    MccApp.select(account);
+    Logger.log(
+        'Processing account %s (%s)', account.getName(),
+        account.getCustomerId());
+    var row = getAccountRow();
+    if (row) {
+      alertRows.push(row);
+    }
+  }
+
+  if (alertRows.length > 0) {
+    Logger.log('Sending email');
+    var htmlBody = generateHtmlBody(alertRows);
+    MailApp.sendEmail(
+        EMAIL_TO, EMAIL_SUBJECT,
+        'See the HTML version of this email for details.',
+        {htmlBody: htmlBody});
+  } else {
+    Logger.log('No need to send email');
+  }
+
+  Logger.log('Done');
+}
+
+function getAccountRow() {
+  var budgetOrder = getBudgetOrder();
+  if (!budgetOrder) {
+    return null;
+  }
+
+  var account = AdWordsApp.currentAccount();
+  var stats = account.getStatsFor(budgetOrder.getStartDateTime(), today());
+  var fracSpent = stats.getCost() / budgetOrder.getSpendingLimit();
+  Logger.log('%s%% spent', (fracSpent * 100).toFixed(0));
+  if (fracSpent <= SPEND_THRESHOLD) {
+    return null;
+  }
+
+  // Values here must match COLUMN_NAMES above.
+  return [
+    account.getCustomerId(),
+    account.getName(),
+    budgetOrder.getName(),
+    formatCurrency(stats.getCost()),
+    formatCurrency(budgetOrder.getSpendingLimit()),
+    account.getCurrencyCode(),
+    formatPercent(fracSpent),
+    formatDate(budgetOrder.getStartDateTime()),
+    formatDate(dayBefore(budgetOrder.getEndDateTime()))
+  ];
+}
+
+function getBudgetOrder() {
+  var iter = AdWordsApp.budgetOrders().withCondition('Status = ACTIVE').get();
+  try {
+    var num = iter.totalNumEntities();
+  } catch (e) {
+    Logger.log('Failed to get active budget order');
+    return null;
+  }
+
+  if (num === 0) {
+    Logger.log('No active budget order');
+    return null;
+  } else if (num === 1) {
+    var budgetOrder = iter.next();
+    if (budgetOrder.getSpendingLimit() == null) {
+      Logger.log('Unlimited budget');
+      return null;
+    }
+    if (budgetOrder.getEndDateTime().year >= 2037) {
+      Logger.log('No end date');
+      return null;
+    }
+    return budgetOrder;
+  }
+
+  throw new Error('Should never happen: multiple active budget orders');
+}
+
+function formatDate(date) {
+  return Utilities.formatString(
+      '%04d-%02d-%02d', date.year, date.month, date.day);
+}
+
+function dayBefore(date) {
+  var d = new Date(
+      date.year, /* 0-indexed */ date.month - 1, /* day before */ date.day - 1);
+  return {year: d.getFullYear(), month: 1 + d.getMonth(), day: d.getDate()};
+}
+
+function today() {
+  return Utilities.formatDate(
+      new Date(), AdWordsApp.currentAccount().getTimeZone(), 'yyyyMMdd');
+}
+
+function formatCurrency(x) {
+  return x.toFixed(2).replace(/(\d)(?=(\d{3})+\.)/g, '$1,');
+}
+
+function formatPercent(x) {
+  return (x * 100).toFixed(0) + '%';
+}
+
+function generateHtmlBody(alertRows) {
+  var body = Template.element(
+      'body', Template.element('h2', 'Account Budget Alert - AdSpend over 90%'),
+      Template.element(
+          'h3',
+          ('' + alertRows.length + ' accounts have spent over ' +
+           formatPercent(SPEND_THRESHOLD) + ' of their budget:')),
+      Template.element('table', {border: 1}, function(table) {
+        table.element('tr', function(tr) {
+          COLUMN_NAMES.forEach(function(colName) {
+            tr.element('th', colName);
+          });
+        });
+        alertRows.forEach(function(alertRow) {
+          table.element('tr', function(tr) {
+            alertRow.forEach(function(colValue) {
+              tr.element('td', colValue);
+            });
+          });
+        });
+      }));
+  return XmlService.getRawFormat().format(body);
+}
+
+var Template = {};
+
+Template.element = function(name) {
+  var elt = XmlService.createElement(name);
+  var wrapper = new Template.ElementWrapper_(elt);
+  for (var i = 1; i < arguments.length; i++) {
+    var arg = arguments[i];
+    var argtype = typeof arg;
+    if (argtype === 'function') {
+      arg(wrapper);
+    } else if (argtype === 'string') {
+      elt.addContent(XmlService.createText(arg));
+    } else if (Template.isElement_(arg)) {
+      elt.addContent(arg);
+    } else if (Template.isPlainObject_(arg)) {
+      for (var attr in arg) {
+        elt.setAttribute(attr, arg[attr]);
+      }
+    } else {
+      throw new Error(
+          Utilities.formatString('Unsupported child: (%s) %s', argtype, arg));
+    }
+  }
+  return elt;
+};
+
+Template.ElementWrapper_ = function(elt) {
+  this.elt_ = elt;
+};
+
+Template.ElementWrapper_.prototype.element = function(name) {
+  var child = Template.element.apply(null, arguments);
+  this.elt_.addContent(child);
+  return this;
+};
+
+Template.isElement_ = function(obj) {
+  return (typeof obj === 'object') && ('isRootElement' in obj);
+};
+
+Template.isPlainObject_ = function(obj) {
+  return (typeof obj === 'object') && (obj.constructor === Object);
+};
