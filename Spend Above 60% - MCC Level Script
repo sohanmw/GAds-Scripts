@@ -1,0 +1,156 @@
+var SPEND_THRESHOLD = 0.6;
+var SPREADSHEET_ID = '1Q3oZPHT6XA2J4QHg-H239DSrXKEGKCktzHozd99RpNg';
+var SHEET_NAME = 'Sheet1';
+
+var COLUMN_NAMES = [
+ 'Date', 'CID', 'Account Name', 'Budget Name', 'Amount Spent', 'Budget Amount',
+ 'Currency', '% Spent', 'Start Date', 'End Date'
+];
+
+function main() {
+ var accounts = MccApp.accounts().get();
+ Logger.log('Got %s accounts', '' + accounts.totalNumEntities());
+
+ var alertRows = [];
+ while (accounts.hasNext()) {
+  var account = accounts.next();
+  MccApp.select(account);
+  Logger.log(
+    'Processing account %s (%s)', account.getName(),
+    account.getCustomerId());
+  var row = getAccountRow();
+  if (row) {
+   alertRows.push(row);
+  }
+ }
+
+ if (alertRows.length > 0) {
+  Logger.log('Updating Google Sheet');
+  updateGoogleSheet(alertRows);
+ } else {
+  Logger.log('No need to update Google Sheet');
+ }
+
+ Logger.log('Done');
+}
+
+function getAccountRow() {
+ var budgetOrder = getBudgetOrder();
+ if (!budgetOrder) {
+  return null;
+ }
+
+ var account = AdWordsApp.currentAccount();
+ var stats = account.getStatsFor(budgetOrder.getStartDateTime(), today());
+ var fracSpent = stats.getCost() / budgetOrder.getSpendingLimit();
+ Logger.log('%s%% spent', (fracSpent * 100).toFixed(0));
+ if (fracSpent <= SPEND_THRESHOLD) {
+  return null;
+ }
+
+ var currentDate = new Date();
+ var formattedDate = formatDate({
+    year: currentDate.getFullYear(),
+    month: currentDate.getMonth() + 1,
+    day: currentDate.getDate()
+ });
+
+ // Values here must match COLUMN_NAMES above.
+ return [
+  formattedDate,
+  account.getCustomerId(),
+  account.getName(),
+  budgetOrder.getName(),
+  formatCurrency(stats.getCost()),
+  formatCurrency(budgetOrder.getSpendingLimit()),
+  account.getCurrencyCode(),
+  formatPercent(fracSpent),
+  formatDate(budgetOrder.getStartDateTime()),
+  formatDate(dayBefore(budgetOrder.getEndDateTime()))
+ ];
+}
+
+function getBudgetOrder() {
+ var iter = AdWordsApp.budgetOrders().withCondition('Status = ACTIVE').get();
+ try {
+  var num = iter.totalNumEntities();
+ } catch (e) {
+  Logger.log('Failed to get active budget order');
+  return null;
+ }
+
+ if (num === 0) {
+  Logger.log('No active budget order');
+  return null;
+ } else if (num === 1) {
+  var budgetOrder = iter.next();
+  if (budgetOrder.getSpendingLimit() == null) {
+   Logger.log('Unlimited budget');
+   return null;
+  }
+  if (budgetOrder.getEndDateTime().year >= 2037) {
+   Logger.log('No end date');
+   return null;
+  }
+  return budgetOrder;
+ }
+
+ throw new Error('Should never happen: multiple active budget orders');
+}
+
+function formatDate(date) {
+ return Utilities.formatString(
+   '%04d-%02d-%02d', date.year, date.month, date.day);
+}
+
+function dayBefore(date) {
+ var d = new Date(
+   date.year, /* 0-indexed */ date.month - 1, /* day before */ date.day - 1);
+ return {year: d.getFullYear(), month: 1 + d.getMonth(), day: d.getDate()};
+}
+
+function today() {
+ return Utilities.formatDate(
+   new Date(), AdWordsApp.currentAccount().getTimeZone(), 'yyyyMMdd');
+}
+
+function formatCurrency(x) {
+ return x.toFixed(2).replace(/(\d)(?=(\d{3})+\.)/g, '$1,');
+}
+
+function formatPercent(x) {
+ return (x * 100).toFixed(0) + '%';
+}
+
+function updateGoogleSheet(alertRows) {
+  var sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SHEET_NAME);
+  var currentDate = formatDate({
+    year: new Date().getFullYear(),
+    month: new Date().getMonth() + 1,
+    day: new Date().getDate()
+  });
+
+  for (var i = 0; i < alertRows.length; i++) {
+    var currentRow = alertRows[i];
+    var cid = currentRow[1];
+    var foundRow = null;
+
+    // Search for existing row with same CID and current date
+    var dataRange = sheet.getDataRange();
+    var values = dataRange.getValues();
+    for (var j = 1; j < values.length; j++) { // Start from 1 to skip header row
+      if (values[j][0] === currentDate && values[j][1] === cid) {
+        foundRow = j + 1; // Add 1 to account for header row
+        break;
+      }
+    }
+
+    if (foundRow !== null) {
+      // Update existing row
+      sheet.getRange(foundRow, 1, 1, currentRow.length).setValues([currentRow]);
+    } else {
+      // Append new row
+      sheet.appendRow(currentRow);
+    }
+  }
+}
