@@ -1,6 +1,6 @@
 var SPEND_THRESHOLD = 0.6;
 var SPREADSHEET_ID = '1Q3oZPHT6XA2J4QHg-H239DSrXKEGKCktzHozd99RpNg';
-var SHEET_NAME = 'Sheet1';
+var SHEET_NAME = 'DoNotEdit';
 
 var COLUMN_NAMES = [
  'Date', 'CID', 'Account Name', 'Budget Name', 'Amount Spent', 'Budget Amount',
